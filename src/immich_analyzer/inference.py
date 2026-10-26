@@ -13,6 +13,10 @@ import httpx
 import numpy as np
 
 
+class EmbeddingCountMismatch(RuntimeError):
+    """Server returned a different number of embeddings than images sent."""
+
+
 class InferenceClient:
     def __init__(
         self,
@@ -54,14 +58,25 @@ class InferenceClient:
             return False
 
     def embed_images(self, jpegs: list[bytes]) -> np.ndarray:
-        """L2-normalised CLIP embeddings, shape (n, d)."""
+        """L2-normalised CLIP embeddings, shape (n, d).
+
+        A single image is sent as an object, not a one-element list: in
+        inference 1.8.x the ``inference-models`` CLIP backend concatenates
+        list inputs along the height axis before preprocessing, so mixed sizes
+        500 and same-width images silently collapse into one embedding.
+        The count check below fails closed if that ever happens.
+        """
+        images = [{"type": "base64", "value": base64.b64encode(j).decode("ascii")} for j in jpegs]
         body = {
             "clip_version_id": self._version,
-            "image": [
-                {"type": "base64", "value": base64.b64encode(j).decode("ascii")} for j in jpegs
-            ],
+            "image": images[0] if len(images) == 1 else images,
         }
-        return _normalise(np.asarray(self._post("/clip/embed_image", body)["embeddings"]))
+        emb = np.asarray(self._post("/clip/embed_image", body)["embeddings"])
+        if emb.ndim != 2 or emb.shape[0] != len(jpegs):
+            raise EmbeddingCountMismatch(
+                f"sent {len(jpegs)} images, got {emb.shape[0] if emb.ndim == 2 else emb.shape}"
+            )
+        return _normalise(emb)
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         body = {"clip_version_id": self._version, "text": texts}

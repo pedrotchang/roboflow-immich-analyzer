@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from immich_analyzer.config import Config
+from immich_analyzer.images import downscale_for_clip
 from immich_analyzer.immich import ImmichClient
 from immich_analyzer.inference import InferenceClient
 from immich_analyzer.pipeline import Analyzer, Mode
@@ -101,9 +102,15 @@ class FakeImmich:
 
 
 class FakeInference:
-    def __init__(self):
+    """Fake Roboflow server. ``mode`` reproduces inference 1.8.x list handling:
+    "correct" | "collapse" (same-size list -> 1 embedding) | "upstream" (mixed
+    sizes 500, same sizes collapse)."""
+
+    def __init__(self, mode: str = "correct"):
         self.by_jpeg: dict[bytes, list[float]] = {}
+        self.poison: set[bytes] = set()
         self.image_calls = 0
+        self.mode = mode
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         if req.url.path == "/readiness":
@@ -113,8 +120,15 @@ class FakeInference:
             return httpx.Response(200, json={"embeddings": [text_vec(t) for t in body["text"]]})
         if req.url.path == "/clip/embed_image":
             self.image_calls += 1
-            embs = [self.by_jpeg[base64.b64decode(i["value"])] for i in body["image"]]
-            return httpx.Response(200, json={"embeddings": embs})
+            imgs = body["image"] if isinstance(body["image"], list) else [body["image"]]
+            raw = [base64.b64decode(i["value"]) for i in imgs]
+            if any(r in self.poison for r in raw):
+                return httpx.Response(500, json={"message": "boom"})
+            if isinstance(body["image"], list) and len(raw) > 1 and self.mode != "correct":
+                if self.mode == "upstream":
+                    return httpx.Response(500, json={"message": "ValueError: dimensions"})
+                return httpx.Response(200, json={"embeddings": [self.by_jpeg[raw[0]]]})
+            return httpx.Response(200, json={"embeddings": [self.by_jpeg[r] for r in raw]})
         return httpx.Response(404)
 
 
@@ -131,7 +145,9 @@ def env(tmp_path):
     )
     store = Store(cfg.state_path)
     ic = InferenceClient(
-        cfg.inference_url, client=httpx.Client(transport=httpx.MockTransport(inf.handler))
+        cfg.inference_url,
+        client=httpx.Client(transport=httpx.MockTransport(inf.handler)),
+        retries=0,
     )
     analyzer = Analyzer(cfg, store, ic)
 
@@ -146,7 +162,7 @@ def env(tmp_path):
 
 def photo(inf: FakeInference, emb, blur=0.0, seed=0) -> bytes:
     j = make_jpeg(blur=blur, seed=seed)
-    inf.by_jpeg[j] = np.asarray(emb, dtype=float).tolist()
+    inf.by_jpeg[downscale_for_clip(j)] = np.asarray(emb, dtype=float).tolist()
     return j
 
 
@@ -220,3 +236,57 @@ def test_dry_run_touches_nothing(env, tmp_path):
     s = analyzer.run(client(), Mode.AUTO)
     assert s.analyzed == 1 and immich.albums == {}
     assert store.get_meta("watermark:owner-1") is None
+
+
+@pytest.mark.parametrize("mode", ["collapse", "upstream"])
+def test_survives_upstream_batching_bug(env, mode):
+    """Batches the server mishandles fall back to one image per request."""
+    immich, inf, analyzer, client, _ = env
+    inf.mode = mode
+    r = immich.add("2026-02-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", photo(inf, E[0], seed=1))
+    s = immich.add(
+        "2026-02-01T00:00:01.000Z",
+        "2026-02-01T00:00:00.000Z",
+        photo(inf, E[1], seed=2),
+        name="Screenshot.png",
+        mime="image/png",
+    )
+    summary = analyzer.run(client(), Mode.AUTO)  # batch_size=2 in this fixture
+    assert summary.analyzed == 2 and summary.errors == 0
+    assert immich.album("Receipts") == {r} and immich.album("Screenshots") == {s}
+
+
+def test_one_bad_image_is_recorded_not_fatal(env):
+    immich, inf, analyzer, client, store = env
+    good = immich.add(
+        "2026-02-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", photo(inf, E[0], seed=1)
+    )
+    bad_jpeg = photo(inf, E[0], seed=2)
+    inf.poison.add(downscale_for_clip(bad_jpeg))
+    bad = immich.add("2026-02-01T00:00:01.000Z", "2026-01-02T00:00:00.000Z", bad_jpeg)
+
+    s1 = analyzer.run(client(), Mode.AUTO)
+    assert s1.analyzed == 1 and s1.errors == 1
+    assert immich.album("Receipts") == {good}
+    assert store.error_count() == 1
+    # Permanent errors don't hold the watermark or get retried every run.
+    assert store.get_meta("watermark:owner-1") >= "2026-02-01T00:00:01"
+    calls = inf.image_calls
+    s2 = analyzer.run(client(), Mode.AUTO)
+    assert s2.analyzed == 0 and s2.errors == 0 and inf.image_calls == calls
+    assert bad not in immich.album("Receipts")
+
+
+def test_inference_outage_fails_the_run_instead_of_recording_errors(env):
+    immich, inf, analyzer, client, store = env
+    immich.add("2026-02-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", photo(inf, E[0], seed=1))
+    analyzer._banks()  # text prompts embedded while the server was still up
+
+    def down(req):
+        raise httpx.ConnectError("connection refused", request=req)
+
+    analyzer.inference._http = httpx.Client(transport=httpx.MockTransport(down))
+    analyzer.inference._retries = 0
+    with pytest.raises(httpx.ConnectError):
+        analyzer.run(client(), Mode.AUTO)
+    assert store.error_count() == 0

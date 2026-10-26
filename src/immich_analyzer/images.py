@@ -20,6 +20,9 @@ from PIL import Image
 from .immich import Asset, ImmichClient
 
 SHARPNESS_SIDE = 512
+# CLIP ViT-B/16 sees 224px; send a bit more so the server's own resize/crop
+# does the final step. Cuts request size ~10x vs Immich's 1440px previews.
+CLIP_SHORT_SIDE = 336
 
 
 class PreviewSource(Protocol):
@@ -73,3 +76,16 @@ def sharpness(jpeg: bytes) -> float:
         return 0.0
     lap = g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:] - 4.0 * g[1:-1, 1:-1]
     return float(lap.var())
+
+
+def downscale_for_clip(jpeg: bytes, short_side: int = CLIP_SHORT_SIDE) -> bytes:
+    """Re-encode so the shorter side is ``short_side`` (never upscales)."""
+    with Image.open(io.BytesIO(jpeg)) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        scale = short_side / min(w, h)
+        if scale < 1:
+            im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.BICUBIC)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=90)
+        return buf.getvalue()

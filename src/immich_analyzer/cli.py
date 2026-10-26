@@ -78,6 +78,7 @@ def cmd_report(cfg: Config) -> int:
     store = Store(cfg.state_path)
     report = {
         "counts": store.label_counts(),
+        "errors": store.error_count(),
         "samples": {
             label: [{"id": i, "reason": r} for i, r in store.samples(label, 5)]
             for label in ("receipt", "screenshot", "blurry", "duplicate")
