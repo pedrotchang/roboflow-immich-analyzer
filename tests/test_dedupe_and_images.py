@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from immich_analyzer.dedupe import find_groups
 from immich_analyzer.images import NfsPreviewSource, sharpness
@@ -72,3 +73,18 @@ def test_nfs_source_falls_back(tmp_path):
 def test_embeddings_roundtrip_float32():
     v = unit(np.arange(1, 513))
     assert np.frombuffer(v.astype(np.float32).tobytes(), dtype=np.float32).shape == (512,)
+
+
+def test_downscale_for_clip_keeps_aspect_and_never_upscales(sharp_jpeg):
+    import io
+
+    from PIL import Image
+
+    from immich_analyzer.images import downscale_for_clip
+
+    small = Image.open(io.BytesIO(downscale_for_clip(sharp_jpeg)))
+    assert min(small.size) == 336 and small.size[0] / small.size[1] == pytest.approx(
+        800 / 600, 0.01
+    )
+    tiny = downscale_for_clip(downscale_for_clip(sharp_jpeg, 100))
+    assert min(Image.open(io.BytesIO(tiny)).size) == 100

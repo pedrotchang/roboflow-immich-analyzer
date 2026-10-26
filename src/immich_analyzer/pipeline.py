@@ -15,14 +15,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
+import httpx
 import numpy as np
 
 from .classify import BLUR_PROMPTS, PROMPTS, Label, PromptBank, classify
 from .config import Config
 from .dedupe import find_groups
-from .images import ApiPreviewSource, NfsPreviewSource, PreviewSource, sharpness
+from .images import (
+    ApiPreviewSource,
+    NfsPreviewSource,
+    PreviewSource,
+    downscale_for_clip,
+    sharpness,
+)
 from .immich import Asset, ImmichClient, parse_ts
-from .inference import InferenceClient
+from .inference import EmbeddingCountMismatch, InferenceClient
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -51,6 +58,7 @@ class Summary:
     listed: int = 0
     analyzed: int = 0
     missing_preview: int = 0
+    errors: int = 0
     labels: Counter = field(default_factory=Counter)
     synced: int = 0
     seconds: float = 0.0
@@ -62,6 +70,7 @@ class _Result:
     jpeg_ok: bool
     sharpness: float = 0.0
     embedding: np.ndarray | None = None
+    error: str | None = None  # permanent per-asset failure; recorded, not retried
 
 
 class Analyzer:
@@ -152,23 +161,42 @@ class Analyzer:
         results, jpegs, idx = [], [], []
         for a in batch:
             jpeg = source.get(a)
-            if jpeg is None:
+            if jpeg is None:  # preview not generated yet: retry next run
                 results.append(_Result(a, jpeg_ok=False))
                 continue
             try:
                 s = sharpness(jpeg)
-            except Exception:  # corrupt preview: skip, don't kill the run
-                log.warning("unreadable preview", extra={"asset": a.id}, exc_info=True)
-                results.append(_Result(a, jpeg_ok=False))
+                small = downscale_for_clip(jpeg)
+            except Exception as e:  # corrupt preview: record, don't kill the run
+                log.warning("unreadable preview", extra={"asset": a.id, "error": str(e)})
+                results.append(_Result(a, jpeg_ok=True, error=f"unreadable preview: {e}"))
                 continue
             results.append(_Result(a, jpeg_ok=True, sharpness=s))
-            jpegs.append(jpeg)
+            jpegs.append(small)
             idx.append(len(results) - 1)
         if jpegs:
+            self._embed_into(results, jpegs, idx)
+        return results
+
+    def _embed_into(self, results: list[_Result], jpegs: list[bytes], idx: list[int]) -> None:
+        """Embed a batch; if the server rejects it, isolate the bad image(s).
+
+        Transport errors (server down) propagate and fail the run, so an
+        outage never turns into thousands of permanent per-asset errors.
+        """
+        try:
             emb = self.inference.embed_images(jpegs)
             for k, i in enumerate(idx):
                 results[i].embedding = emb[k]
-        return results
+            return
+        except (httpx.HTTPStatusError, EmbeddingCountMismatch) as e:
+            if len(jpegs) == 1:
+                a = results[idx[0]].asset
+                log.warning("embedding failed", extra={"asset": a.id, "error": str(e)[:300]})
+                results[idx[0]].error = f"embedding failed: {str(e)[:300]}"
+                return
+        for j, i in zip(jpegs, idx, strict=True):
+            self._embed_into(results, [j], [i])
 
     def _analyze(
         self, todo: list[Asset], source: PreviewSource, owner: str, summary: Summary
@@ -210,6 +238,10 @@ class Analyzer:
 
     def _persist(self, results, owner, content, blur, t, summary, missing) -> None:
         for r in results:
+            if r.error:
+                self.store.record_error(r.asset.id, owner, r.error)
+                summary.errors += 1
+                continue
             if not r.jpeg_ok or r.embedding is None:
                 summary.missing_preview += 1
                 missing.append(r.asset)

@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS assets (
 );
 CREATE INDEX IF NOT EXISTS assets_owner_taken ON assets (owner_id, taken_ts);
 CREATE INDEX IF NOT EXISTS assets_unsynced ON assets (owner_id, synced) WHERE album IS NOT NULL;
+CREATE TABLE IF NOT EXISTS errors (
+    id       TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    reason   TEXT NOT NULL,
+    at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -76,8 +82,21 @@ class Store:
 
     # -- assets ---------------------------------------------------------------
     def analyzed_ids(self, owner_id: str) -> set[str]:
-        cur = self.db.execute("SELECT id FROM assets WHERE owner_id=?", (owner_id,))
+        """Assets already handled: analysed, or failed permanently (not retried)."""
+        cur = self.db.execute(
+            "SELECT id FROM assets WHERE owner_id=? UNION SELECT id FROM errors WHERE owner_id=?",
+            (owner_id, owner_id),
+        )
         return {r[0] for r in cur}
+
+    def record_error(self, asset_id: str, owner_id: str, reason: str) -> None:
+        self.db.execute(
+            "INSERT OR REPLACE INTO errors(id, owner_id, reason) VALUES(?,?,?)",
+            (asset_id, owner_id, reason[:500]),
+        )
+
+    def error_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM errors").fetchone()[0]
 
     def insert(
         self,

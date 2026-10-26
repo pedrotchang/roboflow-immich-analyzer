@@ -56,8 +56,10 @@ class Config:
     clip_version: str = "ViT-B-16"
     state_path: Path = Path("/state/analyzer.sqlite3")
     library_root: Path | None = None  # NFS mount of Immich's upload dir
-    batch_size: int = 8
-    concurrency: int = 4
+    # 1 until roboflow/inference batches CLIP images correctly (see
+    # InferenceClient.embed_images); throughput comes from concurrency instead.
+    batch_size: int = 1
+    concurrency: int = 8
     dry_run: bool = False
     thresholds: Thresholds = field(default_factory=Thresholds)
     albums: Albums = field(default_factory=Albums)
@@ -81,8 +83,8 @@ class Config:
             clip_version=os.environ.get("CLIP_VERSION_ID", "ViT-B-16"),
             state_path=Path(os.environ.get("STATE_PATH", "/state/analyzer.sqlite3")),
             library_root=Path(lib) if lib else None,
-            batch_size=_int("BATCH_SIZE", 8),
-            concurrency=_int("CONCURRENCY", 4),
+            batch_size=_int("BATCH_SIZE", 1),
+            concurrency=_int("CONCURRENCY", 8),
             dry_run=_bool("DRY_RUN", False),
             thresholds=Thresholds(
                 receipt_prob=_float("RECEIPT_PROB", Thresholds.receipt_prob),
