@@ -1,0 +1,10 @@
+.git
+.venv
+.worktrees
+.pytest_cache
+.ruff_cache
+**/__pycache__
+tests
+deploy
+PR.md
+*.sqlite3

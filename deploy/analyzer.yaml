@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: immich-analyzer
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid  # a long first backfill must not overlap the next tick
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 43200
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: immich-analyzer
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: analyzer
+              image: roboflow-immich-analyzer
+              args: [run]
+              env:
+                - { name: IMMICH_URL, value: "http://immich-server.immich.svc.cluster.local:2283" }
+                - { name: INFERENCE_URL, value: "http://roboflow-inference:9001" }
+                - { name: LIBRARY_ROOT, value: /library }
+                - { name: BATCH_SIZE, value: "16" }
+                - name: IMMICH_API_KEYS
+                  valueFrom:
+                    secretKeyRef:
+                      name: immich-analyzer-api-keys
+                      key: IMMICH_API_KEYS
+              resources:
+                requests: { cpu: 250m, memory: 512Mi }
+                limits: { memory: 2Gi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: library, mountPath: /library, readOnly: true }
+                - { name: state, mountPath: /state }
+          volumes:
+            - name: library
+              persistentVolumeClaim: { claimName: immich-library, readOnly: true }
+            - name: state
+              persistentVolumeClaim: { claimName: analyzer-state }

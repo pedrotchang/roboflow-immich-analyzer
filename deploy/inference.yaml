@@ -1,0 +1,88 @@
+# Roboflow Inference Server on one NVIDIA GPU (or time-slice).
+# Use the -cu13 image for Blackwell (RTX 50xx); -gpu otherwise.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roboflow-inference
+  labels:
+    app: roboflow-inference
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: roboflow-inference
+  template:
+    metadata:
+      labels:
+        app: roboflow-inference
+    spec:
+      runtimeClassName: nvidia
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: inference
+          image: roboflow/roboflow-inference-server-gpu-cu13:1.8.3
+          ports:
+            - name: http
+              containerPort: 9001
+          env:
+            - name: ROBOFLOW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: roboflow-api-key
+                  key: ROBOFLOW_API_KEY
+            - { name: HOME, value: /tmp }
+            - { name: MODEL_CACHE_DIR, value: /cache }
+            - { name: CLIP_VERSION_ID, value: ViT-B-16 }
+            - { name: CLIP_MAX_BATCH_SIZE, value: "16" }
+            - { name: PRELOAD_MODELS, value: clip/ViT-B-16 }
+            # Attack surface: this server only answers CLIP requests.
+            - { name: DISABLE_WORKFLOW_ENDPOINTS, value: "true" }
+            - { name: ALLOW_CUSTOM_PYTHON_EXECUTION_IN_WORKFLOWS, value: "false" }
+            - { name: ENABLE_STREAM_API, value: "false" }
+            - { name: ENABLE_BUILDER, value: "false" }
+            # Privacy: no inference data or telemetry leaves the cluster.
+            - { name: METRICS_ENABLED, value: "false" }
+            - { name: DISABLE_VERSION_CHECK, value: "true" }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /readiness, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 500m, memory: 2Gi }
+            limits: { memory: 6Gi, nvidia.com/gpu: 1 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: cache, mountPath: /cache }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: cache
+          persistentVolumeClaim: { claimName: inference-cache }
+        - name: tmp
+          emptyDir: { sizeLimit: 5Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: roboflow-inference
+spec:
+  selector:
+    app: roboflow-inference
+  ports:
+    - { name: http, port: 9001, targetPort: http }

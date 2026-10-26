@@ -1,0 +1,55 @@
+# Portable NetworkPolicies. Plain NetworkPolicy can't filter by FQDN, so the
+# inference pod may reach any public HTTPS endpoint (for the one-time weight
+# download); with Cilium/Calico, narrow it to *.roboflow.com.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: roboflow-inference
+spec:
+  podSelector:
+    matchLabels:
+      app: roboflow-inference
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: immich-analyzer
+      ports:
+        - { port: 9001, protocol: TCP }
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - { port: 443, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: immich-analyzer
+spec:
+  podSelector:
+    matchLabels:
+      app: immich-analyzer
+  policyTypes: [Ingress, Egress]
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: roboflow-inference
+      ports:
+        - { port: 9001, protocol: TCP }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: immich
+      ports:
+        - { port: 2283, protocol: TCP }
