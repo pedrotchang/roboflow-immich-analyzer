@@ -1,0 +1,18 @@
+# Example deployment. Adjust to your cluster:
+#   1. Create the two Secrets (see secrets.example.yaml) — never commit real keys.
+#   2. Point the `immich-library` PVC at your Immich upload volume (read-only),
+#      or delete it and unset LIBRARY_ROOT to backfill over the API instead.
+#   3. kubectl apply -k deploy/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: immich-analyzer
+resources:
+  - namespace.yaml
+  - storage.yaml
+  - inference.yaml
+  - analyzer.yaml
+  - networkpolicy.yaml
+images:
+  - name: roboflow-immich-analyzer
+    newName: forgejo.seyzahl.com/platform-infrastructure/roboflow-immich-analyzer
+    newTag: latest
