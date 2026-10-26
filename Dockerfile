@@ -19,7 +19,16 @@ FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3
 LABEL org.opencontainers.image.title="roboflow-immich-analyzer" \
       org.opencontainers.image.description="Triage an Immich library with a self-hosted Roboflow Inference server" \
       org.opencontainers.image.licenses="MIT"
-RUN useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin app
+# Security updates on top of the pinned base (Trivy gate fails on fixable
+# CRITICALs), and drop pip/setuptools: the venv is complete, nothing installs
+# at runtime, and they're the bulk of the image's Python CVE surface.
+RUN set -eux; \
+    apt-get update; \
+    apt-get upgrade -y --no-install-recommends; \
+    rm -rf /var/lib/apt/lists/*; \
+    python -m pip uninstall -y pip setuptools wheel || true; \
+    rm -rf /usr/local/lib/python3.12/site-packages/pip* /usr/local/bin/pip*; \
+    useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin app
 COPY --from=build /app/.venv /app/.venv
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 1000:1000
