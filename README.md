@@ -1,5 +1,7 @@
 # roboflow-immich-analyzer
 
+[![ci](https://github.com/pedrotchang/roboflow-immich-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrotchang/roboflow-immich-analyzer/actions/workflows/ci.yml)
+
 Sort a self-hosted [Immich](https://immich.app) photo library into three review
 albums using a **self-hosted [Roboflow Inference](https://github.com/roboflow/inference)
 server running CLIP on a local NVIDIA GPU**:
@@ -127,7 +129,17 @@ Vault) are in
 - **GPU sharing.** The inference server takes one NVIDIA time-slice and uses a
   `Recreate` rollout. The analyzer itself needs no GPU and runs anywhere.
 - **Supply chain.** Base images are pinned by digest, dependencies are locked with
-  `uv.lock`, and CI actions are pinned to commit SHAs.
+  `uv.lock`, and CI actions are pinned to commit SHAs (kept current by Renovate).
+  The GitHub mirror builds the image and scans it with Trivy on every push.
+  Results go to code scanning, and fixable CRITICAL findings fail the build.
+
+## Where the code lives
+
+This repo is canonical on a self-hosted
+[Forgejo](https://forgejo.seyzahl.com/platform-infrastructure/roboflow-immich-analyzer)
+and push-mirrored to [GitHub](https://github.com/pedrotchang/roboflow-immich-analyzer).
+Forgejo Actions builds and publishes the image the cluster runs. GitHub Actions
+runs the same tests, plus a container build and vulnerability scan.
 
 ## Development
 
