@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+dist/
+*.egg-info/
+
+# Local state
+*.sqlite3
+.env
+
+# Worktree workflow (local-only)
+.worktrees/
+PR.md
