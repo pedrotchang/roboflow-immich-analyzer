@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+      - name: Install uv
+        run: python3 -m pip install --quiet --user "uv==0.13.1"
+      - name: Lint
+        run: ~/.local/bin/uv run --locked ruff check . && ~/.local/bin/uv run --locked ruff format --check .
+      - name: Test
+        run: ~/.local/bin/uv run --locked pytest
+
+  ship:
+    needs: test
+    if: github.event_name != 'pull_request'
+    uses: platform-infrastructure/actions/.forgejo/workflows/build-and-push.yml@main
+    with:
+      context: .
+      image: roboflow-immich-analyzer
+      tag: latest
+    secrets: inherit
