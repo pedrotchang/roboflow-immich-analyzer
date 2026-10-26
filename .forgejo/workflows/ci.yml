@@ -19,12 +19,3 @@ jobs:
       - name: Test
         run: ~/.local/bin/uv run --locked pytest
 
-  ship:
-    needs: test
-    if: github.event_name != 'pull_request'
-    uses: platform-infrastructure/actions/.forgejo/workflows/build-and-push.yml@main
-    with:
-      context: .
-      image: roboflow-immich-analyzer
-      tag: latest
-    secrets: inherit

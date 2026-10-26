@@ -1,0 +1,18 @@
+name: release
+
+# Separate workflow on purpose: Forgejo does not honour a job-level `if:` on a
+# reusable-workflow call, so gating publish inside ci.yml would push images
+# from pull requests. PRs are tested by ci.yml before they can merge.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ship:
+    uses: platform-infrastructure/actions/.forgejo/workflows/build-and-push.yml@main
+    with:
+      context: .
+      image: roboflow-immich-analyzer
+      tag: latest
+    secrets: inherit
